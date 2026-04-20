@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { createScenario, getInlineInsights, getScenariosByUser, runSimulation, updateScenarioById } from "../api/client";
@@ -56,6 +56,7 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     () => `${DRAFT_STORAGE_KEY_PREFIX}:${user?._id || "anonymous"}`,
     [user?._id]
   );
+  const simulationRequestIdRef = useRef(0);
 
   function toDraftFromScenario(scenario) {
     const scenarioInputs = scenario?.inputs || {};
@@ -89,6 +90,11 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     setEvents([]);
     setErrors({});
     setError("");
+    setSuccessMessage("");
+    setSimulationResult(null);
+    setSimulationInsights([]);
+    setSimulationError("");
+    setSimulationLoading(false);
   }
 
   function loadScenarioDraft(scenarioId) {
@@ -107,6 +113,11 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     const eventCount = events.length;
     return { totalImpact, eventCount };
   }, [events]);
+
+  const hasSimulationContext = useMemo(
+    () => Boolean(selectedScenarioId || inputs.scenarioName?.trim() || events.length > 0),
+    [selectedScenarioId, inputs.scenarioName, events.length]
+  );
 
   const smartSuggestions = useMemo(() => {
     const lines = [];
@@ -224,6 +235,9 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
   async function fetchSimulation(nextInputs = inputs, nextEvents = events) {
     if (!token) return;
 
+    const requestId = simulationRequestIdRef.current + 1;
+    simulationRequestIdRef.current = requestId;
+
     setSimulationLoading(true);
     setSimulationError("");
 
@@ -246,6 +260,10 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
         token
       );
 
+      if (requestId !== simulationRequestIdRef.current) {
+        return;
+      }
+
       setSimulationResult(result);
 
       const insightsPayload = {
@@ -261,12 +279,23 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
       };
 
       const insightResponse = await getInlineInsights(insightsPayload, token);
+
+      if (requestId !== simulationRequestIdRef.current) {
+        return;
+      }
+
       setSimulationInsights(Array.isArray(insightResponse.insights) ? insightResponse.insights : []);
     } catch (simulationErr) {
+      if (requestId !== simulationRequestIdRef.current) {
+        return;
+      }
+
       setSimulationError(simulationErr.message || "Unable to load live simulation.");
       setSimulationInsights([]);
     } finally {
-      setSimulationLoading(false);
+      if (requestId === simulationRequestIdRef.current) {
+        setSimulationLoading(false);
+      }
     }
   }
 
@@ -390,12 +419,20 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
   useEffect(() => {
     if (!token || !initializedDraft) return;
 
+    if (!hasSimulationContext) {
+      setSimulationResult(null);
+      setSimulationInsights([]);
+      setSimulationError("");
+      setSimulationLoading(false);
+      return;
+    }
+
     const timer = setTimeout(() => {
       fetchSimulation(inputs, events);
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [token, inputs, events, initializedDraft]);
+  }, [token, inputs, events, initializedDraft, hasSimulationContext]);
 
   function handleAddEvent(newEvent) {
     setEvents((prev) => {

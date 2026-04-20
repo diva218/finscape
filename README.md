@@ -85,6 +85,7 @@ client/
     - `npm run install:all`
 3. Configure backend env:
     - Copy `server/.env.example` to `server/.env`
+   - Set `GEMINI_API_KEY` and optionally `GEMINI_MODEL` (default: `gemini-2.5-flash`)
    - If MongoDB is offline, FinScape now uses an in-memory fallback for auth and scenarios, but persistence will be temporary.
 4. Start both apps:
     - `npm run dev`

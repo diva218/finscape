@@ -98,15 +98,16 @@ export default function AiAdvisorPanel({ scenario, embedded = false }) {
 
     setLoading(true);
     setError("");
+    let computedSimulation = null;
 
     try {
       const prompt = customQuestion || "Explain my scenario, identify risks, and suggest actions.";
-      const simulation = await buildSimulationForAi();
-      if (!Array.isArray(simulation.monthlyBalances) || simulation.monthlyBalances.length === 0) {
+      computedSimulation = await buildSimulationForAi();
+      if (!Array.isArray(computedSimulation.monthlyBalances) || computedSimulation.monthlyBalances.length === 0) {
         throw new Error("Unable to generate simulation for this scenario.");
       }
 
-      const payload = buildAiPayload(user, { ...scenario, latestResult: simulation }, prompt);
+      const payload = buildAiPayload(user, { ...scenario, latestResult: computedSimulation }, prompt);
       const response = await analyzeScenarioWithAi(payload, token);
 
       const nextMessages = [];
