@@ -35,7 +35,7 @@ async function runSimulation(req, res, next) {
       const scenario = canUseDatabaseForUser(req.user._id)
         ? await Scenario.findOne({ _id: scenarioId, userId: req.user._id })
         : findScenarioById(scenarioId);
-      if (!scenario) {
+      if (!scenario || String(scenario.userId || scenario.userId?._id) !== String(req.user._id)) {
         return res.status(404).json({ message: "Scenario not found" });
       }
 

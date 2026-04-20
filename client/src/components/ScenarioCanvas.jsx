@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { createScenario, getInlineInsights, getScenariosByUser, runSimulation } from "../api/client";
+import { createScenario, getInlineInsights, getScenariosByUser, runSimulation, updateScenarioById } from "../api/client";
 import { useAuth } from "../context/AuthContext";
 import { useSimulationStore } from "../store/simulationStore";
 import AddEventModal from "./AddEventModal";
@@ -24,7 +24,7 @@ const initialInputs = {
   months: 12
 };
 
-const DRAFT_STORAGE_KEY = "finscape_playground_draft";
+const DRAFT_STORAGE_KEY_PREFIX = "finscape_playground_draft";
 
 function toPersonalityMode(type) {
   if (type === "Conservative") return "conservative";
@@ -49,9 +49,13 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
   const [simulationInsights, setSimulationInsights] = useState([]);
   const [simulationLoading, setSimulationLoading] = useState(false);
   const [simulationError, setSimulationError] = useState("");
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { setScenarios } = useSimulationStore();
   const navigate = useNavigate();
+  const draftStorageKey = useMemo(
+    () => `${DRAFT_STORAGE_KEY_PREFIX}:${user?._id || "anonymous"}`,
+    [user?._id]
+  );
 
   function toDraftFromScenario(scenario) {
     const scenarioInputs = scenario?.inputs || {};
@@ -266,6 +270,66 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     }
   }
 
+  function buildScenarioPayload() {
+    return {
+      name: inputs.scenarioName?.trim(),
+      income: Number(inputs.income) || 0,
+      expenses:
+        (Number(inputs.fixedExpenses) || 0)
+        + (Number(inputs.emi) || 0)
+        + (Number(inputs.investments) || 0)
+        + (Number(inputs.discretionarySpend) || 0),
+      events: events.map((event) => ({
+        name: event.name,
+        month: Number(event.month) || 1,
+        amount: Number(event.amount) || 0
+      })),
+      financialPersonality: toPersonalityMode(personalityType),
+      inputs: {
+        income: Number(inputs.income) || 0,
+        fixedExpenses: Number(inputs.fixedExpenses) || 0,
+        emi: Number(inputs.emi) || 0,
+        investments: Number(inputs.investments) || 0,
+        discretionarySpend: Number(inputs.discretionarySpend) || 0,
+        initialBalance: Number(inputs.initialBalance) || 0,
+        months: Number(inputs.months) || 12,
+        events: events.map((event) => ({
+          name: event.name,
+          month: Number(event.month) || 1,
+          amount: Number(event.amount) || 0
+        })),
+        toggles: {
+          jobLoss: false,
+          medicalExpense: false
+        }
+      }
+    };
+  }
+
+  async function saveOrUpdateScenario(tokenValue, shouldNavigateAfterSave = false) {
+    const payload = buildScenarioPayload();
+    const hasSelectedScenario = Boolean(selectedScenarioId);
+
+    const savedScenario = hasSelectedScenario
+      ? await updateScenarioById(selectedScenarioId, payload, tokenValue)
+      : await createScenario(payload, tokenValue);
+
+    const refreshedScenarios = await getScenariosByUser(tokenValue);
+    const safeScenarios = Array.isArray(refreshedScenarios) ? refreshedScenarios : [];
+    setSavedScenarios(safeScenarios);
+    setScenarios(safeScenarios);
+
+    if (savedScenario?._id) {
+      setSelectedScenarioId(savedScenario._id);
+    }
+
+    if (shouldNavigateAfterSave) {
+      navigate("/simulation");
+    }
+
+    return savedScenario;
+  }
+
   useEffect(() => {
     if (!token) return;
 
@@ -278,7 +342,7 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
         if (!initializedDraft) {
           let restored = null;
           try {
-            const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+            const raw = localStorage.getItem(draftStorageKey);
             restored = raw ? JSON.parse(raw) : null;
           } catch (_err) {
             restored = null;
@@ -304,7 +368,12 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
           setInitializedDraft(true);
         }
       });
-  }, [token]);
+  }, [token, draftStorageKey]);
+
+  useEffect(() => {
+    // Reset initialization when the authenticated user changes, so each user loads their own draft.
+    setInitializedDraft(false);
+  }, [draftStorageKey]);
 
   useEffect(() => {
     if (!initializedDraft) return;
@@ -315,8 +384,8 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
       selectedScenarioId
     };
 
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(payload));
-  }, [inputs, events, selectedScenarioId, initializedDraft]);
+    localStorage.setItem(draftStorageKey, JSON.stringify(payload));
+  }, [inputs, events, selectedScenarioId, initializedDraft, draftStorageKey]);
 
   useEffect(() => {
     if (!token || !initializedDraft) return;
@@ -408,48 +477,7 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     setSuccessMessage("");
 
     try {
-      const payload = {
-        name: inputs.scenarioName?.trim(),
-        income: Number(inputs.income) || 0,
-        expenses:
-          (Number(inputs.fixedExpenses) || 0)
-          + (Number(inputs.emi) || 0)
-          + (Number(inputs.investments) || 0)
-          + (Number(inputs.discretionarySpend) || 0),
-        events: events.map((event) => ({
-          name: event.name,
-          month: Number(event.month) || 1,
-          amount: Number(event.amount) || 0
-        })),
-        financialPersonality: toPersonalityMode(personalityType),
-        inputs: {
-          income: Number(inputs.income) || 0,
-          fixedExpenses: Number(inputs.fixedExpenses) || 0,
-          emi: Number(inputs.emi) || 0,
-          investments: Number(inputs.investments) || 0,
-          discretionarySpend: Number(inputs.discretionarySpend) || 0,
-          initialBalance: Number(inputs.initialBalance) || 0,
-          months: Number(inputs.months) || 12,
-          events: events.map((event) => ({
-            name: event.name,
-            month: Number(event.month) || 1,
-            amount: Number(event.amount) || 0
-          })),
-          toggles: {
-            jobLoss: false,
-            medicalExpense: false
-          }
-        }
-      };
-
-      const created = await createScenario(payload, token);
-      const refreshedScenarios = await getScenariosByUser(token);
-      const safeScenarios = Array.isArray(refreshedScenarios) ? refreshedScenarios : [];
-      setSavedScenarios(safeScenarios);
-      setScenarios(safeScenarios);
-      if (created?._id) {
-        setSelectedScenarioId(created._id);
-      }
+      await saveOrUpdateScenario(token, false);
       setSuccessMessage("Scenario saved successfully. Opening simulation view...");
       navigate("/simulation");
     } catch (err) {
@@ -475,48 +503,7 @@ export default function ScenarioCanvas({ personalityType = "Balanced" }) {
     setSuccessMessage("");
 
     try {
-      const payload = {
-        name: inputs.scenarioName?.trim(),
-        income: Number(inputs.income) || 0,
-        expenses:
-          (Number(inputs.fixedExpenses) || 0)
-          + (Number(inputs.emi) || 0)
-          + (Number(inputs.investments) || 0)
-          + (Number(inputs.discretionarySpend) || 0),
-        events: events.map((event) => ({
-          name: event.name,
-          month: Number(event.month) || 1,
-          amount: Number(event.amount) || 0
-        })),
-        financialPersonality: toPersonalityMode(personalityType),
-        inputs: {
-          income: Number(inputs.income) || 0,
-          fixedExpenses: Number(inputs.fixedExpenses) || 0,
-          emi: Number(inputs.emi) || 0,
-          investments: Number(inputs.investments) || 0,
-          discretionarySpend: Number(inputs.discretionarySpend) || 0,
-          initialBalance: Number(inputs.initialBalance) || 0,
-          months: Number(inputs.months) || 12,
-          events: events.map((event) => ({
-            name: event.name,
-            month: Number(event.month) || 1,
-            amount: Number(event.amount) || 0
-          })),
-          toggles: {
-            jobLoss: false,
-            medicalExpense: false
-          }
-        }
-      };
-
-      const created = await createScenario(payload, token);
-      const refreshedScenarios = await getScenariosByUser(token);
-      const safeScenarios = Array.isArray(refreshedScenarios) ? refreshedScenarios : [];
-      setSavedScenarios(safeScenarios);
-      setScenarios(safeScenarios);
-      if (created?._id) {
-        setSelectedScenarioId(created._id);
-      }
+      await saveOrUpdateScenario(token, false);
       setSuccessMessage("Scenario saved. You can keep editing or run simulation now.");
     } catch (err) {
       setError(err.message || "Unable to save scenario right now.");

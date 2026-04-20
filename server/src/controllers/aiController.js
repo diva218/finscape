@@ -1,5 +1,57 @@
 const { getEnv } = require("../config/env");
 
+function buildLocalFallbackAnalysis({ profile = {}, events = [], simulation = {}, question = "" }) {
+  const income = Number(profile?.income) || 0;
+  const expenses = Number(profile?.expenses) || 0;
+  const monthlyBalances = Array.isArray(simulation?.monthlyBalances) ? simulation.monthlyBalances : [];
+  const finalBalance = Number(simulation?.finalBalance) || (monthlyBalances.length ? Number(monthlyBalances[monthlyBalances.length - 1]) : 0);
+  const stressScore = Number(simulation?.stressScore) || 0;
+  const riskLevel = simulation?.riskLevel || "UNKNOWN";
+  const savingsRate = income > 0 ? (((income - expenses) / income) * 100) : 0;
+  const negativeMonth = monthlyBalances.findIndex((value) => Number(value) < 0);
+
+  const explanationParts = [
+    `This scenario projects a final balance of ${Number(finalBalance).toFixed(2)} with risk level ${riskLevel} and stress score ${Number(stressScore).toFixed(1)}/10.`,
+    income > 0
+      ? `Estimated savings rate based on provided profile is ${Number(savingsRate).toFixed(1)}%.`
+      : "Income value is not provided, so savings-rate confidence is limited.",
+    question ? `You asked: "${String(question).trim()}".` : ""
+  ].filter(Boolean);
+
+  const risks = [];
+  if (negativeMonth !== -1) {
+    risks.push(`Balance drops below zero in month ${negativeMonth + 1}.`);
+  }
+  if (stressScore >= 7) {
+    risks.push("Expense pressure is high relative to income.");
+  }
+  if (savingsRate < 10) {
+    risks.push("Savings rate is below the 10% safety threshold.");
+  }
+  if (!risks.length) {
+    risks.push("No severe risk trigger detected in current inputs.");
+  }
+
+  const suggestions = [];
+  if (expenses > income && income > 0) {
+    suggestions.push("Reduce discretionary and fixed outflows to bring expenses below income.");
+  }
+  if (stressScore >= 7) {
+    suggestions.push("Lower EMI or defer non-essential spend to reduce stress score.");
+  }
+  if (Array.isArray(events) && events.length) {
+    suggestions.push("Spread large negative events across months to reduce cashflow shocks.");
+  }
+  suggestions.push("Run an alternate scenario with +10% income or -10% expenses for comparison.");
+
+  return {
+    analysis: `Scenario Summary\n${explanationParts.join(" ")}\n\nRisks\n${risks.map((item) => `- ${item}`).join("\n")}\n\nSuggestions\n${suggestions.map((item) => `- ${item}`).join("\n")}`,
+    explanation: explanationParts.join(" "),
+    risks,
+    suggestions
+  };
+}
+
 function buildAnalysisPrompt({ profile = {}, events = [], simulation = {}, question = "" }) {
   const payload = {
     profile: {
@@ -86,14 +138,17 @@ async function analyzeScenario(req, res, next) {
   try {
     const { openaiApiKey, openaiModel } = getEnv();
 
-    if (!openaiApiKey) {
-      return res.status(500).json({ message: "OPENAI_API_KEY is not configured on the server" });
-    }
-
     const { profile, events, simulation, question } = req.body || {};
 
     if (!simulation || !Array.isArray(simulation.monthlyBalances)) {
       return res.status(400).json({ message: "simulation.monthlyBalances is required" });
+    }
+
+    if (!openaiApiKey) {
+      return res.json({
+        ...buildLocalFallbackAnalysis({ profile, events, simulation, question }),
+        source: "local-fallback"
+      });
     }
 
     const prompt = buildAnalysisPrompt({ profile, events, simulation, question });
@@ -133,14 +188,21 @@ async function analyzeScenario(req, res, next) {
     const payload = await openaiResponse.json().catch(() => ({}));
 
     if (!openaiResponse.ok) {
-      const message = payload?.error?.message || "OpenAI request failed";
-      return res.status(502).json({ message });
+      return res.json({
+        ...buildLocalFallbackAnalysis({ profile, events, simulation, question }),
+        source: "local-fallback",
+        providerError: payload?.error?.message || "OpenAI request failed"
+      });
     }
 
     const analysis = extractTextFromResponsesApi(payload);
 
     if (!analysis) {
-      return res.status(502).json({ message: "OpenAI returned an empty response" });
+      return res.json({
+        ...buildLocalFallbackAnalysis({ profile, events, simulation, question }),
+        source: "local-fallback",
+        providerError: "OpenAI returned an empty response"
+      });
     }
 
     const structured = parseAnalysisSections(analysis);
@@ -149,9 +211,22 @@ async function analyzeScenario(req, res, next) {
       analysis,
       explanation: structured.explanation,
       risks: structured.risks,
-      suggestions: structured.suggestions
+      suggestions: structured.suggestions,
+      source: "openai"
     });
   } catch (error) {
+    try {
+      const { profile, events, simulation, question } = req.body || {};
+      if (simulation && Array.isArray(simulation.monthlyBalances)) {
+        return res.json({
+          ...buildLocalFallbackAnalysis({ profile, events, simulation, question }),
+          source: "local-fallback",
+          providerError: error.message
+        });
+      }
+    } catch (_fallbackError) {
+      // Ignore fallback failure and pass original error to handler.
+    }
     next(error);
   }
 }
